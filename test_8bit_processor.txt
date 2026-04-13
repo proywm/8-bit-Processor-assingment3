@@ -1,0 +1,568 @@
+# =========================================================
+# 8-bit Processor Test Script for Digital Simulator
+# =========================================================
+#
+# This test script programs 8 instructions into instruction
+# memory, then runs the processor and verifies the results.
+#
+# ─────────────────────────────────────────────────────────
+# ARCHITECTURE SUMMARY
+# ─────────────────────────────────────────────────────────
+#
+# 4-state pipeline FSM (one-hot):
+#   FETCH → DECODE → EXECUTE → WRITEBACK → FETCH → ...
+#
+# Each instruction takes 4 clock cycles.
+#
+# Signals in this test:
+#   clk              - clock input
+#   Program_Counter  - 3-bit PC output (address into memory)
+#   InstrMem_input   - 8-bit data to program into memory
+#   InstrMem_ctrl    - 2-bit memory control (01 = store)
+#   IR_output        - 8-bit instruction register output
+#   IR_ctrl          - 2-bit IR control (01 = load, 00 = hold)
+#   Write_Back       - 1-bit writeback state indicator
+#   RegFile_ctrl     - 8-bit register file control bus
+#   ALU_output       - 8-bit ALU result
+#
+# ─────────────────────────────────────────────────────────
+# INSTRUCTION FORMAT
+# ─────────────────────────────────────────────────────────
+#
+#   Bit: [7  6  5] [4  3] [2  1] [0]
+#        [opcode ] [op1 ] [op2 ] [type]
+#        [S1 S0 Cin] [dd] [ss/imm] [T]
+#
+# opcode = ALU control bits {S1, S0, Cin}:
+#   000 = ADD         A + B
+#   001 = ADDC        A + B + 1   (add with carry)
+#   010 = SUBB        A + ~B      (subtract with borrow)
+#   011 = SUB         A + ~B + 1  (subtract)
+#   100 = PASS/LDI    A           (transfer A)
+#   101 = INC         A + 1       (increment)
+#   110 = DEC         A - 1       (decrement)
+#   111 = PASS        A           (transfer A)
+#
+# type bit:
+#   0 = R-type:  ALU input A = R[op1], B = R[op2]
+#   1 = I-type:  ALU input A = zero_extend(op2), B = R[op2]
+#                (used for LDI with opcode=100)
+#
+# Register encoding:
+#   00 = R0,  01 = R1,  10 = R2,  11 = R3
+#
+# ─────────────────────────────────────────────────────────
+# TEST PROGRAM (8 instructions)
+# ─────────────────────────────────────────────────────────
+#
+# Addr  Instruction      Binary          Decimal  Expected
+# ----  ---------------  --------------  -------  --------
+#  0    LDI  R1, #3      100 01 11 1     143      R1 = 3
+#  1    LDI  R2, #1      100 10 01 1     147      R2 = 1
+#  2    ADD  R1, R2      000 01 10 0      12      R1 = 3+1 = 4
+#  3    SUB  R1, R2      011 01 10 0     108      R1 = 4-1 = 3
+#  4    INC  R1          101 01 00 0     168      R1 = 3+1 = 4
+#  5    DEC  R1          110 01 00 0     200      R1 = 4-1 = 3
+#  6    ADDC R1, R2      001 01 10 0      44      R1 = 3+1+1 = 5
+#  7    PASS R1          100 01 00 0     136      R1 = 5 (unchanged)
+#
+# Register trace:
+#   Initial:  R0=0  R1=0  R2=0  R3=0
+#   After 0:  R0=0  R1=3  R2=0  R3=0
+#   After 1:  R0=0  R1=3  R2=1  R3=0
+#   After 2:  R0=0  R1=4  R2=1  R3=0
+#   After 3:  R0=0  R1=3  R2=1  R3=0
+#   After 4:  R0=0  R1=4  R2=1  R3=0
+#   After 5:  R0=0  R1=3  R2=1  R3=0
+#   After 6:  R0=0  R1=5  R2=1  R3=0
+#   After 7:  R0=0  R1=5  R2=1  R3=0
+#
+# ─────────────────────────────────────────────────────────
+# HOW PROGRAMMING WORKS
+# ─────────────────────────────────────────────────────────
+#
+# To store an instruction into memory:
+#   1. Set InstrMem_input = instruction, InstrMem_ctrl = 1
+#   2. Pulse clock → memory stores data at current PC
+#   3. Set InstrMem_ctrl = 0, pulse clock 3 more times
+#      → FSM cycles through Decode, Execute, Writeback
+#      → On Writeback, PC increments to next address
+#   4. Repeat for next instruction
+#
+# During programming, a mux forces IR_ctrl = 00 (hold),
+# preventing the IR from loading garbage instructions.
+# The IR holds 0x00 (= ADD R0,R0 = harmless NOP).
+#
+# After programming all 8 addresses, PC[2:0] wraps to 0
+# and the processor begins executing from address 0.
+#
+# =========================================================
+
+clk Program_Counter InstrMem_input InstrMem_ctrl IR_output IR_ctrl Write_Back RegFile_ctrl ALU_output
+
+
+# =========================================================
+# PHASE 1: PROGRAM INSTRUCTION MEMORY
+# =========================================================
+
+# ---------------------------------------------------------
+# addr 0: LDI R1, #3 = 143
+#
+# 143 = 10001111 binary
+#
+# Breakdown:
+#   opcode = 100  → Transfer A (pass-through)
+#   op1    = 01   → R1 (destination)
+#   op2    = 11   → immediate value = 3
+#   type   = 1    → I-type
+#
+# Meaning: R1 ← 3  (load immediate 3 into R1)
+#
+# How: type=1 routes zero_extend(op2)=3 to ALU input A.
+#      opcode=100 means Output = A + 0 + 0 = 3.
+#      Result 3 is written to R1 during WRITEBACK.
+# ---------------------------------------------------------
+C 0 143 1 X X X X X
+repeat(3) C X 0 0 X X X X X
+
+# ---------------------------------------------------------
+# addr 1: LDI R2, #1 = 147
+#
+# 147 = 10010011 binary
+#
+# Breakdown:
+#   opcode = 100  → Transfer A
+#   op1    = 10   → R2 (destination)
+#   op2    = 01   → immediate value = 1
+#   type   = 1    → I-type
+#
+# Meaning: R2 ← 1
+# ---------------------------------------------------------
+C 1 147 1 X X X X X
+repeat(3) C X 0 0 X X X X X
+
+# ---------------------------------------------------------
+# addr 2: ADD R1, R2 = 12
+#
+# 12 = 00001100 binary
+#
+# Breakdown:
+#   opcode = 000  → ADD (A + B)
+#   op1    = 01   → R1 (destination, also ALU input A)
+#   op2    = 10   → R2 (ALU input B)
+#   type   = 0    → R-type
+#
+# Meaning: R1 ← R1 + R2 = 3 + 1 = 4
+# ---------------------------------------------------------
+C 2 12 1 X X X X X
+repeat(3) C X 0 0 X X X X X
+
+# ---------------------------------------------------------
+# addr 3: SUB R1, R2 = 108
+#
+# 108 = 01101100 binary
+#
+# Breakdown:
+#   opcode = 011  → SUB (A + ~B + 1 = A - B)
+#   op1    = 01   → R1
+#   op2    = 10   → R2
+#   type   = 0    → R-type
+#
+# Meaning: R1 ← R1 - R2 = 4 - 1 = 3
+# ---------------------------------------------------------
+C 3 108 1 X X X X X
+repeat(3) C X 0 0 X X X X X
+
+# ---------------------------------------------------------
+# addr 4: INC R1 = 168
+#
+# 168 = 10101000 binary
+#
+# Breakdown:
+#   opcode = 101  → INC (A + 1)
+#   op1    = 01   → R1
+#   op2    = 00   → (don't care for INC)
+#   type   = 0    → R-type
+#
+# Meaning: R1 ← R1 + 1 = 3 + 1 = 4
+# ---------------------------------------------------------
+C 4 168 1 X X X X X
+repeat(3) C X 0 0 X X X X X
+
+# ---------------------------------------------------------
+# addr 5: DEC R1 = 200
+#
+# 200 = 11001000 binary
+#
+# Breakdown:
+#   opcode = 110  → DEC (A + 0xFF + 0 = A - 1)
+#   op1    = 01   → R1
+#   op2    = 00   → (don't care for DEC)
+#   type   = 0    → R-type
+#
+# Meaning: R1 ← R1 - 1 = 4 - 1 = 3
+# ---------------------------------------------------------
+C 5 200 1 X X X X X
+repeat(3) C X 0 0 X X X X X
+
+# ---------------------------------------------------------
+# addr 6: ADDC R1, R2 = 44
+#
+# 44 = 00101100 binary
+#
+# Breakdown:
+#   opcode = 001  → ADDC (A + B + 1)
+#   op1    = 01   → R1
+#   op2    = 10   → R2
+#   type   = 0    → R-type
+#
+# Meaning: R1 ← R1 + R2 + 1 = 3 + 1 + 1 = 5
+# ---------------------------------------------------------
+C 6 44 1 X X X X X
+repeat(3) C X 0 0 X X X X X
+
+# ---------------------------------------------------------
+# addr 7: PASS R1 = 136
+#
+# 136 = 10001000 binary
+#
+# Breakdown:
+#   opcode = 100  → PASS / Transfer A (A + 0 + 0 = A)
+#   op1    = 01   → R1
+#   op2    = 00   → (don't care for PASS)
+#   type   = 0    → R-type
+#
+# Meaning: R1 ← R1 = 5 (no change)
+# ---------------------------------------------------------
+C 7 136 1 X X X X X
+repeat(3) C X 0 0 X X X X X
+
+
+# =========================================================
+# PHASE 2: EXECUTE PROGRAM
+# =========================================================
+#
+# Programming is done. PC has wrapped to 0 (8 mod 8 = 0).
+# InstrMem_ctrl = 0 from now on (run mode).
+# The FSM is now in FETCH state, ready to execute.
+#
+# Each instruction takes 4 clock cycles:
+#   Cycle 1: FETCH     - IR loads instruction from memory[PC]
+#   Cycle 2: DECODE    - Fields decoded, registers read
+#   Cycle 3: EXECUTE   - ALU computes result
+#   Cycle 4: WRITEBACK - Result written to register, PC++
+#
+# 8 instructions × 4 clocks = 32 clocks minimum.
+# We run 40 clocks to complete all 8 instructions plus
+# a bit extra to observe the wrap-around.
+# ---------------------------------------------------------
+
+# ---------------------------------------------------------
+# Instruction 0: LDI R1, #3
+# Cycles 1-4: FETCH → DECODE → EXECUTE → WRITEBACK
+# After WRITEBACK: R1=3, PC→1
+# ALU output during EXECUTE/WRITEBACK = 3
+# RegFile_ctrl during WRITEBACK = 4 (R1 write enable)
+# ---------------------------------------------------------
+# FETCH:     IR loads 143 from memory[0]
+C 0 0 0 X X 0 0 X
+# DECODE:    IR=143, fields decoded
+C X 0 0 143 0 0 0 X
+# EXECUTE:   ALU computes Transfer A(imm=3) = 3
+C X 0 0 143 0 0 0 3
+# WRITEBACK: R1←3, PC increments to 1
+C X 0 0 143 0 1 4 3
+
+# ---------------------------------------------------------
+# Instruction 1: LDI R2, #1
+# After WRITEBACK: R2=1, PC→2
+# ALU output = 1
+# RegFile_ctrl during WRITEBACK = 16 (R2 write enable)
+# ---------------------------------------------------------
+# FETCH:     IR loads 147 from memory[1]
+C 1 0 0 X X 0 0 X
+# DECODE:    IR=147
+C X 0 0 147 0 0 0 X
+# EXECUTE:   ALU = Transfer A(imm=1) = 1
+C X 0 0 147 0 0 0 1
+# WRITEBACK: R2←1, PC→2
+C X 0 0 147 0 1 16 1
+
+# ---------------------------------------------------------
+# Instruction 2: ADD R1, R2
+# R1 = R1 + R2 = 3 + 1 = 4
+# After WRITEBACK: R1=4, PC→3
+# ALU output = 4
+# RegFile_ctrl during WRITEBACK = 4 (R1 write enable)
+# ---------------------------------------------------------
+# FETCH
+C 2 0 0 X X 0 0 X
+# DECODE
+C X 0 0 12 0 0 0 X
+# EXECUTE: ALU = 3 + 1 = 4
+C X 0 0 12 0 0 0 4
+# WRITEBACK: R1←4, PC→3
+C X 0 0 12 0 1 4 4
+
+# ---------------------------------------------------------
+# Instruction 3: SUB R1, R2
+# R1 = R1 - R2 = 4 - 1 = 3
+# After WRITEBACK: R1=3, PC→4
+# ALU output = 3
+# ---------------------------------------------------------
+# FETCH
+C 3 0 0 X X 0 0 X
+# DECODE
+C X 0 0 108 0 0 0 X
+# EXECUTE: ALU = 4 - 1 = 3
+C X 0 0 108 0 0 0 3
+# WRITEBACK: R1←3, PC→4
+C X 0 0 108 0 1 4 3
+
+# ---------------------------------------------------------
+# Instruction 4: INC R1
+# R1 = R1 + 1 = 3 + 1 = 4
+# After WRITEBACK: R1=4, PC→5
+# ALU output = 4
+# ---------------------------------------------------------
+# FETCH
+C 4 0 0 X X 0 0 X
+# DECODE
+C X 0 0 168 0 0 0 X
+# EXECUTE: ALU = 3 + 1 = 4
+C X 0 0 168 0 0 0 4
+# WRITEBACK: R1←4, PC→5
+C X 0 0 168 0 1 4 4
+
+# ---------------------------------------------------------
+# Instruction 5: DEC R1
+# R1 = R1 - 1 = 4 - 1 = 3
+# After WRITEBACK: R1=3, PC→6
+# ALU output = 3
+# ---------------------------------------------------------
+# FETCH
+C 5 0 0 X X 0 0 X
+# DECODE
+C X 0 0 200 0 0 0 X
+# EXECUTE: ALU = 4 - 1 = 3
+C X 0 0 200 0 0 0 3
+# WRITEBACK: R1←3, PC→6
+C X 0 0 200 0 1 4 3
+
+# ---------------------------------------------------------
+# Instruction 6: ADDC R1, R2
+# R1 = R1 + R2 + 1 = 3 + 1 + 1 = 5
+# After WRITEBACK: R1=5, PC→7
+# ALU output = 5
+# ---------------------------------------------------------
+# FETCH
+C 6 0 0 X X 0 0 X
+# DECODE
+C X 0 0 44 0 0 0 X
+# EXECUTE: ALU = 3 + 1 + 1 = 5
+C X 0 0 44 0 0 0 5
+# WRITEBACK: R1←5, PC→7
+C X 0 0 44 0 1 4 5
+
+# ---------------------------------------------------------
+# Instruction 7: PASS R1
+# R1 = R1 = 5 (no change)
+# After WRITEBACK: R1=5, PC→0 (wraps around)
+# ALU output = 5
+# ---------------------------------------------------------
+# FETCH
+C 7 0 0 X X 0 0 X
+# DECODE
+C X 0 0 136 0 0 0 X
+# EXECUTE: ALU = Transfer A(R1) = 5
+C X 0 0 136 0 0 0 5
+# WRITEBACK: R1←5 (unchanged), PC→0
+C X 0 0 136 0 1 4 5
+
+# =========================================================
+# PHASE 3: VERIFY WRAP-AROUND (program repeats from addr 0)
+# =========================================================
+#
+# The PC has wrapped to 0. The processor will re-execute
+# instruction 0 (LDI R1, #3) which resets R1 to 3.
+# This confirms the processor loops correctly.
+# ---------------------------------------------------------
+
+# Instruction 0 again: LDI R1, #3
+# FETCH
+C 0 0 0 X X 0 0 X
+# DECODE
+C X 0 0 143 0 0 0 X
+# EXECUTE: ALU = 3
+C X 0 0 143 0 0 0 3
+# WRITEBACK: R1←3 again
+C X 0 0 143 0 1 4 3
+
+# =========================================================
+# TEST COMPLETE
+# =========================================================
+#
+# Final register state after first pass:
+#   R0 = 0, R1 = 5, R2 = 1, R3 = 0
+#
+# All 7 distinct operations verified:
+#   ✓ LDI  (I-type, Transfer A with immediate)
+#   ✓ ADD  (R-type, A + B)
+#   ✓ SUB  (R-type, A - B via A + ~B + 1)
+#   ✓ INC  (R-type, A + 1)
+#   ✓ DEC  (R-type, A - 1 via A + 0xFF)
+#   ✓ ADDC (R-type, A + B + 1)
+#   ✓ PASS (R-type, Transfer A, no change)
+# =========================================================
+# =========================================================
+# 8-bit processor test
+#
+# Signals:
+#   clk Program_Counter InstrMem_input InstrMem_ctrl
+#   IR_output IR_ctrl Write_Back ALU_output
+#
+# Instruction format:
+#   [ opcode(3) | op1(2) | op2(2) | type(1) ]
+#
+# opcode = ALU control bits = S1 S0 Cin
+#
+# ALU control / opcode meanings:
+#   000 = A + B                  (ADD)
+#   001 = A + B + 1              (ADD with carry)
+#   010 = A + B̅                 (SUB with borrow)
+#   011 = A + B̅ + 1             (SUB)
+#   100 = A                      (TRANSFER A)
+#   101 = A + 1                  (INCREMENT A)
+#   110 = A - 1                  (DECREMENT A)
+#   111 = A                      (TRANSFER A)
+#
+# Register encoding:
+#   00 = R0
+#   01 = R1
+#   10 = R2
+#   11 = R3
+#
+# Type bit:
+#   0 = R-type
+#   1 = I-type
+#
+# Notes:
+# - In R-type, op1 is A and destination, op2 selects register B.
+# - In I-type, op2 is the 2-bit immediate value.
+# - TRANSFER A should be encoded as I-type here, with op2 filled
+#   as an immediate field.
+# - Registers are assumed to start at 0.
+#
+# Program:
+#   0: INC   R1        ; R1 = 1
+#   1: INC   R1        ; R1 = 2
+#   2: ADDI  R2, 3     ; R2 = 3
+#   3: ADD   R2, R1    ; R2 = 5
+#   4: SUB   R2, R1    ; R2 = 3
+#   5: SUBB  R2, R1    ; R2 = 0
+#   6: INC   R0        ; R0 = 1
+#   7: DEC   R0        ; R0 = 0
+#   8: TRANSFER A R2   ; I-type, imm=01, R2 stays 0
+#   9: TRANSFER A R2   ; I-type, imm=10, R2 stays 0
+# =========================================================
+
+clk Program_Counter InstrMem_input InstrMem_ctrl IR_output IR_ctrl Write_Back ALU_output
+
+# ---------------------------------------------------------
+# settle
+# ---------------------------------------------------------
+#repeat(10) C X 0 0 X X X X
+
+# ---------------------------------------------------------
+# program instruction memory
+# ---------------------------------------------------------
+
+# ---------------------------------------------------------
+# addr 0 : 168 = INC R1
+#
+# 168 = 0xA8 = 10101000
+#
+# Breakdown:
+#   opcode = 101  -> Increment A
+#   op1    = 01   -> R1
+#   op2    = 00   -> immediate field present but ignored by INC
+#   type   = 0    -> R-type
+#
+# Meaning:
+#   R1 <- R1 + 1
+# ---------------------------------------------------------
+C X 168 1 X X X X
+repeat(3) C X 0 0 X X X X
+
+# ---------------------------------------------------------
+# addr 1 : 168 = INC R1
+#
+# Same instruction again
+# Meaning:
+#   R1 <- R1 + 1
+# ---------------------------------------------------------
+C X 168 1 X X X X
+repeat(3) C X 0 0 X X X X
+
+C X 168 1 X X X X
+repeat(3) C X 0 0 X X X X
+
+C X 168 1 X X X X
+repeat(3) C X 0 0 X X X X
+
+# ---------------------------------------------------------
+# addr 0 : 168 = INC R2
+#
+# 176 = 0xA8 = 10110000
+#
+# Breakdown:
+#   opcode = 101  -> Increment A
+#   op1    = 10   -> R2
+#   op2    = 00   -> immediate field present but ignored by INC
+#   type   = 0    -> R-type
+#
+# Meaning:
+#   R2 <- R2 + 1
+# ---------------------------------------------------------
+C X 176 1 X X X X
+repeat(3) C X 0 0 X X X X
+
+
+C X 176 1 X X X X
+repeat(3) C X 0 0 X X X X
+
+
+
+# ---------------------------------------------------------
+# addr 4 : 114 = SUB R1, R2
+#
+# 108 = 0x6C = 011 01 10 0
+#
+# Breakdown:
+#   opcode = 011  -> Subtract
+#   op1    = 01   -> R2
+#   op2    = 10   -> R1
+#   type   = 0    -> R-type
+#
+# Meaning:
+#   R2 <- R2 - R1
+# ---------------------------------------------------------
+C X 108 1 X X X X
+repeat(3) C X 0 0 X X X X
+
+
+
+# ---------------------------------------------------------
+# stop programming
+# ---------------------------------------------------------
+repeat(2) C X 0 0 X X X X
+
+# ---------------------------------------------------------
+# run
+# ---------------------------------------------------------
+# Expected high-level behavior:
+#   R1: 0 -> 1 -> 2
+#   R2: 0 -> 3 -> 5 -> 3 -> 0 -> 0 -> 0
+#   R0: 0 -> 1 -> 0
+# ---------------------------------------------------------
+repeat(40) C X 0 0 X X X X
