@@ -255,27 +255,56 @@ Open a new top-level circuit in Digital (name it `8BitProcessor`). Add the follo
 
 ---
 
-#### Step 1: Wire the Control Unit
+#### Step 1: Build and Wire the Control Unit
 
-The Control Unit is a ring of 4 D flip-flops (see the `8-bit-processor_control_unit.png` screenshot). If you haven't built this yet, create it as a subcircuit:
+The Control Unit is a **one-hot ring counter** made of 4 D flip-flops. You must build this as a **separate subcircuit** named `ControlUnit`. The reference implementation is shown below:
 
-1. Place **four D flip-flops** in a row. In Digital: *Components → Flip-Flops → D Flip-Flop*.
-2. Connect `clk` to the **C** (clock) input of all four flip-flops.
-3. Wire them in a ring:
-   - `Q` of flip-flop 4 (rightmost) → `D` of flip-flop 3
-   - `Q` of flip-flop 3 → `D` of flip-flop 2
-   - `Q` of flip-flop 2 → `D` of flip-flop 1
-   - `Q` of flip-flop 1 (leftmost) → `D` of flip-flop 4 (back to rightmost)
-4. **Initialize flip-flop 4** (the FETCH flip-flop) to **Default = 1**. Right-click the flip-flop, go to its properties, and set "Default" to 1. All other flip-flops keep Default = 0.
-5. Wire the `Q` outputs to the circuit outputs:
-   - Flip-flop 4 Q → `Inst_Fetch`
-   - Flip-flop 3 Q → `Inst_Decode`
-   - Flip-flop 2 Q → `Inst_Execute`
-   - Flip-flop 1 Q → `Write_back`
+![Control Unit — 4 D Flip-Flop Ring Counter](8-bit-processor_control_unit.png)
 
-Back in the top-level circuit:
+**Building the `ControlUnit` subcircuit — step by step:**
+
+1. Create a new subcircuit in Digital (*File → New* or right-click in the Components panel → *New Circuit*). Name it `ControlUnit`.
+2. Add one **Clock input** pin — label it `clk`.
+3. Place **four D flip-flops** in a horizontal row (left to right). In Digital: *Components → Flip-Flops → D Flip-Flop*.
+4. Connect `clk` to the **C** (clock) input of **all four** flip-flops (the clock wire fans out horizontally, as shown in the screenshot).
+5. Wire the flip-flops in a **ring** — each flip-flop's `Q` output feeds the next flip-flop's `D` input, and the last wraps back to the first:
+
+   ```
+   FF4(Q) ──→ FF3(D)
+   FF3(Q) ──→ FF2(D)
+   FF2(Q) ──→ FF1(D)
+   FF1(Q) ──→ FF4(D)    ← wraps around (the top wire in the screenshot)
+   ```
+
+   > **In the screenshot:** The four flip-flops are arranged left-to-right. Each Q output connects to the D input of the flip-flop to its left. The leftmost flip-flop's Q wraps all the way back to the rightmost flip-flop's D via the wire running along the top.
+
+6. **Initialize the FETCH flip-flop (FF4, rightmost) to Default = 1:**
+   - Right-click on the rightmost D flip-flop.
+   - In its properties, set **"Default"** to **1**.
+   - All other three flip-flops keep Default = 0.
+   - This ensures the FSM starts in the FETCH state on power-up.
+
+7. Add **four Output pins** and wire each flip-flop's `Q` to an output:
+
+   | Flip-Flop | Position (in screenshot) | Output Label    | Default Value |
+   |-----------|--------------------------|-----------------|:-------------:|
+   | FF4       | Rightmost                | `Inst_Fetch`    | **1**         |
+   | FF3       | Second from right        | `Inst_Decode`   | 0             |
+   | FF2       | Second from left         | `Inst_Execute`  | 0             |
+   | FF1       | Leftmost                 | `Write_back`    | 0             |
+
+   > **In the screenshot**, the output probes appear below each flip-flop: `Inst_Fetch` (rightmost), `Inst_Decode`, `Inst_Execute`, `Write_back` (leftmost).
+
+8. **How it works:** On each rising clock edge, the single "1" shifts one position through the ring: FETCH → DECODE → EXECUTE → WRITEBACK → FETCH → … Only one output is high at any time (one-hot encoding).
+
+**Back in the top-level `8BitProcessor` circuit:**
+
+- Place the `ControlUnit` subcircuit at the **top-center** of the canvas (see the main processor screenshot).
 - Connect `clk` → `ControlUnit.clk`.
-- Run wires from each ControlUnit output to the corresponding **output probe pins** (`Inst_Fetch`, `Inst_Decode`, `Inst_Exec`, `Write_Back`). These signals will be used by other components below.
+- Run wires from each ControlUnit output to the corresponding **output probe pins** (`Inst_Fetch`, `Inst_Decode`, `Inst_Exec`, `Write_Back`).
+- These four control signals will be used throughout the rest of the wiring:
+  - `Inst_Fetch` → IR control mux (Step 4)
+  - `Write_Back` → PC CTRL[0] (Step 2), Register File gate mux (Step 10)
 
 ---
 
